@@ -20,13 +20,3 @@ type SummaryResult struct {
 	Summary    string   `json:"summary"`
 	Categories []string `json:"categories"`
 }
-
-type SearchResult struct {
-	FullName     string   `json:"full_name"`
-	Description  *string  `json:"description"`
-	AISummary    *string  `json:"ai_summary"`
-	AICategories []string `json:"ai_categories"`
-	Stars        int      `json:"stars"`
-	URL          string   `json:"url"`
-	Score        float64  `json:"score"`
-}

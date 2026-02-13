@@ -11,6 +11,45 @@ import (
 	sdk "github.com/surrealdb/surrealdb.go"
 )
 
+// SearchOptions controls what VectorSearch returns.
+type SearchOptions struct {
+	K      int
+	Fields []string   // which columns to SELECT (score is always computed)
+	Sort   []SortSpec // ORDER BY clauses; default: score desc
+}
+
+// SortSpec is a single ORDER BY clause.
+type SortSpec struct {
+	Field string
+	Desc  bool
+}
+
+// allowedFields is the whitelist of fields that may appear in a dynamic query.
+// Every key must match a SurrealDB field name on the repo table (or the
+// computed "score" alias).
+var allowedFields = map[string]bool{
+	"owner":          true,
+	"name":           true,
+	"full_name":      true,
+	"description":    true,
+	"url":            true,
+	"homepage_url":   true,
+	"stars":          true,
+	"language":       true,
+	"topics":         true,
+	"readme_excerpt": true,
+	"ai_summary":     true,
+	"ai_categories":  true,
+	"fetched_at":     true,
+	"enriched_at":    true,
+	"score":          true,
+}
+
+// IsAllowedField reports whether f is a valid search field name.
+func IsAllowedField(f string) bool {
+	return allowedFields[f]
+}
+
 type Client struct {
 	db *sdk.DB
 }
@@ -186,21 +225,43 @@ func (c *Client) UpdateEmbedding(ctx context.Context, fullName string, embedding
 	return nil
 }
 
-func (c *Client) VectorSearch(ctx context.Context, queryVec []float32, k int) ([]models.SearchResult, error) {
+func (c *Client) VectorSearch(ctx context.Context, queryVec []float32, opts SearchOptions) ([]map[string]any, error) {
 	// NOTE: The HNSW KNN operator (<|K|>) returns empty results despite the
 	// index existing. This appears to be a SurrealDB bug where the HNSW index
 	// is not rebuilt after REMOVE INDEX + DEFINE INDEX. Fall back to brute-force
 	// cosine similarity which works correctly with 277 repos.
-	query := fmt.Sprintf(`
-		SELECT full_name, description, ai_summary, ai_categories, stars, url,
-			vector::similarity::cosine(embedding, $query_vec) AS score
-		FROM repo
-		WHERE embedding IS NOT NONE
-		ORDER BY score DESC
-		LIMIT %d
-	`, k)
 
-	results, err := sdk.Query[[]models.SearchResult](ctx, c.db, query,
+	// Always compute score; add requested fields.
+	selectParts := []string{"vector::similarity::cosine(embedding, $query_vec) AS score"}
+	for _, f := range opts.Fields {
+		if f == "score" {
+			continue // already included
+		}
+		selectParts = append(selectParts, f)
+	}
+
+	// ORDER BY — default to score desc.
+	sortSpecs := opts.Sort
+	if len(sortSpecs) == 0 {
+		sortSpecs = []SortSpec{{Field: "score", Desc: true}}
+	}
+	var orderParts []string
+	for _, s := range sortSpecs {
+		dir := "ASC"
+		if s.Desc {
+			dir = "DESC"
+		}
+		orderParts = append(orderParts, fmt.Sprintf("%s %s", s.Field, dir))
+	}
+
+	query := fmt.Sprintf(
+		"SELECT %s FROM repo WHERE embedding IS NOT NONE ORDER BY %s LIMIT %d",
+		strings.Join(selectParts, ", "),
+		strings.Join(orderParts, ", "),
+		opts.K,
+	)
+
+	results, err := sdk.Query[[]map[string]any](ctx, c.db, query,
 		map[string]any{"query_vec": queryVec})
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
