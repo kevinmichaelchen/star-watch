@@ -125,7 +125,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 		fmt.Println("All repos already have embeddings")
 	} else {
 		fmt.Printf("Generating embeddings for %d repos...\n", len(toEmbed))
-		embClient := embedding.NewClient(cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
+		embClient := embedding.NewClient(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
 
 		// Build input texts
 		texts := make([]string, len(toEmbed))
@@ -158,17 +158,41 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 }
 
 func loadRepos(ctx context.Context, cfg *config.Config, refresh bool) ([]models.Repo, error) {
-	if !refresh {
-		repos, err := readCache()
-		if err == nil {
-			fmt.Printf("Loaded %d repos from %s (use --refresh to re-fetch)\n", len(repos), cacheFile)
-			return repos, nil
-		}
+	gh := github.NewClient(cfg.GitHubToken)
+	cached, cacheErr := readCache()
+
+	// --refresh: discard cache and do a full forward fetch
+	if refresh {
+		fmt.Println("Fetching star list from GitHub (full refresh)...")
+		return fetchAndCache(ctx, gh, cfg.StarListID, github.ForwardStrategy{}, nil)
 	}
 
+	// Cache exists: try incremental fetch for new repos
+	if cacheErr == nil && len(cached) > 0 {
+		fmt.Printf("Cache has %d repos. Checking for new stars...\n", len(cached))
+		repos, err := github.IncrementalStrategy{}.Fetch(ctx, gh, cfg.StarListID, cached)
+		if err != nil {
+			fmt.Printf("  WARN: incremental fetch failed (%v), using cache as-is\n", err)
+			return cached, nil
+		}
+		if len(repos) > len(cached) {
+			fmt.Printf("Found %d new repos (%d total)\n", len(repos)-len(cached), len(repos))
+			if err := writeCache(repos); err != nil {
+				fmt.Printf("  WARN: could not update %s: %v\n", cacheFile, err)
+			}
+		} else {
+			fmt.Printf("Cache is up to date (%d repos)\n", len(cached))
+		}
+		return repos, nil
+	}
+
+	// No cache: full forward fetch
 	fmt.Println("Fetching star list from GitHub...")
-	gh := github.NewClient(cfg.GitHubToken)
-	repos, err := gh.FetchStarList(ctx, cfg.StarListID)
+	return fetchAndCache(ctx, gh, cfg.StarListID, github.ForwardStrategy{}, nil)
+}
+
+func fetchAndCache(ctx context.Context, gh *github.Client, listID string, strategy github.Strategy, cached []models.Repo) ([]models.Repo, error) {
+	repos, err := strategy.Fetch(ctx, gh, listID, cached)
 	if err != nil {
 		return nil, fmt.Errorf("fetching star list: %w", err)
 	}
@@ -179,7 +203,6 @@ func loadRepos(ctx context.Context, cfg *config.Config, refresh bool) ([]models.
 	} else {
 		fmt.Printf("Cached to %s\n", cacheFile)
 	}
-
 	return repos, nil
 }
 

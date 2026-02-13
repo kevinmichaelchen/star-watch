@@ -84,7 +84,7 @@ func searchCmd() *cobra.Command {
 			query := args[0]
 
 			// Embed the query
-			embClient := embedding.NewClient(cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
+			embClient := embedding.NewClient(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
 			vec, err := embClient.EmbedSingle(ctx, query)
 			if err != nil {
 				return fmt.Errorf("embedding query: %w", err)

@@ -13,6 +13,7 @@ import (
 
 const graphqlEndpoint = "https://api.github.com/graphql"
 
+// Client is a thin wrapper around the GitHub GraphQL API.
 type Client struct {
 	token      string
 	httpClient *http.Client
@@ -22,15 +23,19 @@ func NewClient(token string) *Client {
 	return &Client{token: token, httpClient: http.DefaultClient}
 }
 
-const starListQuery = `
-query($listId: ID!, $after: String) {
+// pageQuery supports both forward (first/after) and backward (last/before)
+// Relay pagination via nullable variables.
+const pageQuery = `
+query($listId: ID!, $first: Int, $after: String, $last: Int, $before: String) {
   node(id: $listId) {
     ... on UserList {
-      items(first: 100, after: $after) {
+      items(first: $first, after: $after, last: $last, before: $before) {
         totalCount
         pageInfo {
           hasNextPage
           endCursor
+          hasPreviousPage
+          startCursor
         }
         nodes {
           ... on Repository {
@@ -55,6 +60,48 @@ query($listId: ID!, $after: String) {
 }
 `
 
+// Page holds one page of results from the star list connection.
+type Page struct {
+	TotalCount int
+	PageInfo   PageInfo
+	Repos      []models.Repo
+}
+
+type PageInfo struct {
+	HasNextPage     bool   `json:"hasNextPage"`
+	EndCursor       string `json:"endCursor"`
+	HasPreviousPage bool   `json:"hasPreviousPage"`
+	StartCursor     string `json:"startCursor"`
+}
+
+// FetchPageForward returns one page of results using forward pagination
+// (oldest first). Pass nil for after to start from the beginning.
+func (c *Client) FetchPageForward(ctx context.Context, listID string, after *string) (*Page, error) {
+	vars := map[string]any{
+		"listId": listID,
+		"first":  100,
+	}
+	if after != nil {
+		vars["after"] = *after
+	}
+	return c.fetchPage(ctx, vars)
+}
+
+// FetchPageBackward returns one page of results using backward pagination
+// (newest first). Pass nil for before to start from the end.
+func (c *Client) FetchPageBackward(ctx context.Context, listID string, before *string) (*Page, error) {
+	vars := map[string]any{
+		"listId": listID,
+		"last":   100,
+	}
+	if before != nil {
+		vars["before"] = *before
+	}
+	return c.fetchPage(ctx, vars)
+}
+
+// --- internal ---
+
 type graphqlRequest struct {
 	Query     string         `json:"query"`
 	Variables map[string]any `json:"variables"`
@@ -70,12 +117,9 @@ type graphqlResponse struct {
 type starListData struct {
 	Node struct {
 		Items struct {
-			TotalCount int `json:"totalCount"`
-			PageInfo   struct {
-				HasNextPage bool   `json:"hasNextPage"`
-				EndCursor   string `json:"endCursor"`
-			} `json:"pageInfo"`
-			Nodes []repoNode `json:"nodes"`
+			TotalCount int      `json:"totalCount"`
+			PageInfo   PageInfo `json:"pageInfo"`
+			Nodes      []repoNode
 		} `json:"items"`
 	} `json:"node"`
 }
@@ -104,40 +148,27 @@ type repoNode struct {
 	} `json:"object"`
 }
 
-func (c *Client) FetchStarList(ctx context.Context, listID string) ([]models.Repo, error) {
-	var allRepos []models.Repo
-	var cursor *string
-
-	for {
-		vars := map[string]any{"listId": listID}
-		if cursor != nil {
-			vars["after"] = *cursor
-		}
-
-		body, err := c.doGraphQL(ctx, starListQuery, vars)
-		if err != nil {
-			return nil, err
-		}
-
-		var data starListData
-		if err := json.Unmarshal(body, &data); err != nil {
-			return nil, fmt.Errorf("parsing response: %w", err)
-		}
-
-		for _, node := range data.Node.Items.Nodes {
-			repo := nodeToRepo(node)
-			allRepos = append(allRepos, repo)
-		}
-
-		fmt.Printf("  Fetched %d/%d repos\n", len(allRepos), data.Node.Items.TotalCount)
-
-		if !data.Node.Items.PageInfo.HasNextPage {
-			break
-		}
-		cursor = &data.Node.Items.PageInfo.EndCursor
+func (c *Client) fetchPage(ctx context.Context, vars map[string]any) (*Page, error) {
+	body, err := c.doGraphQL(ctx, pageQuery, vars)
+	if err != nil {
+		return nil, err
 	}
 
-	return allRepos, nil
+	var data starListData
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+
+	repos := make([]models.Repo, 0, len(data.Node.Items.Nodes))
+	for _, node := range data.Node.Items.Nodes {
+		repos = append(repos, nodeToRepo(node))
+	}
+
+	return &Page{
+		TotalCount: data.Node.Items.TotalCount,
+		PageInfo:   data.Node.Items.PageInfo,
+		Repos:      repos,
+	}, nil
 }
 
 func (c *Client) doGraphQL(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {

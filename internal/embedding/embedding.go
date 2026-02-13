@@ -3,6 +3,7 @@ package embedding
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -12,29 +13,41 @@ type Client struct {
 	model  openai.EmbeddingModel
 }
 
-func NewClient(apiKey, model string) *Client {
+func NewClient(baseURL, apiKey, model string) *Client {
+	cfg := openai.DefaultConfig(apiKey)
+	cfg.BaseURL = strings.TrimSuffix(baseURL, "/")
 	return &Client{
-		client: openai.NewClient(apiKey),
+		client: openai.NewClientWithConfig(cfg),
 		model:  openai.EmbeddingModel(model),
 	}
 }
+
+const maxBatchSize = 256
 
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
-	resp, err := c.client.CreateEmbeddings(ctx, openai.EmbeddingRequest{
-		Input: texts,
-		Model: c.model,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating embeddings: %w", err)
-	}
+	vectors := make([][]float32, len(texts))
+	for start := 0; start < len(texts); start += maxBatchSize {
+		end := start + maxBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		batch := texts[start:end]
 
-	vectors := make([][]float32, len(resp.Data))
-	for _, emb := range resp.Data {
-		vectors[emb.Index] = emb.Embedding
+		resp, err := c.client.CreateEmbeddings(ctx, openai.EmbeddingRequest{
+			Input: batch,
+			Model: c.model,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("creating embeddings (batch %d-%d): %w", start, end, err)
+		}
+
+		for _, emb := range resp.Data {
+			vectors[start+emb.Index] = emb.Embedding
+		}
 	}
 	return vectors, nil
 }

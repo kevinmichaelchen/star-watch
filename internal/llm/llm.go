@@ -49,9 +49,8 @@ func (c *Client) Summarize(ctx context.Context, repo models.Repo) (*models.Summa
 			{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 			{Role: openai.ChatMessageRoleUser, Content: userMsg},
 		},
-		ResponseFormat: &openai.ChatCompletionResponseFormat{
-			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
-		},
+		// No ResponseFormat — not all models support json_object mode.
+		// The system prompt instructs the model to return pure JSON.
 		Temperature: 0.3,
 	})
 	if err != nil {
@@ -63,6 +62,7 @@ func (c *Client) Summarize(ctx context.Context, repo models.Repo) (*models.Summa
 	}
 
 	content := resp.Choices[0].Message.Content
+	content = stripCodeFences(content)
 
 	var result models.SummaryResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
@@ -70,4 +70,21 @@ func (c *Client) Summarize(ctx context.Context, repo models.Repo) (*models.Summa
 	}
 
 	return &result, nil
+}
+
+// stripCodeFences removes markdown code fences that some models wrap around JSON.
+func stripCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		// Remove opening fence (```json or ```)
+		if i := strings.Index(s, "\n"); i != -1 {
+			s = s[i+1:]
+		}
+		// Remove closing fence
+		if i := strings.LastIndex(s, "```"); i != -1 {
+			s = s[:i]
+		}
+		s = strings.TrimSpace(s)
+	}
+	return s
 }

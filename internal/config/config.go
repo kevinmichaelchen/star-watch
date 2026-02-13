@@ -21,8 +21,9 @@ type Config struct {
 	LLMAPIKey  string
 	LLMModel   string
 
-	EmbeddingAPIKey string
-	EmbeddingModel  string
+	EmbeddingBaseURL string
+	EmbeddingAPIKey  string
+	EmbeddingModel   string
 }
 
 func Load() *Config {
@@ -42,22 +43,35 @@ func Load() *Config {
 		LLMAPIKey:  os.Getenv("LLM_API_KEY"),
 		LLMModel:   os.Getenv("LLM_MODEL"),
 
-		EmbeddingAPIKey: os.Getenv("EMBEDDING_API_KEY"),
-		EmbeddingModel:  os.Getenv("EMBEDDING_MODEL"),
+		EmbeddingBaseURL: os.Getenv("EMBEDDING_BASE_URL"),
+		EmbeddingAPIKey:  os.Getenv("EMBEDDING_API_KEY"),
+		EmbeddingModel:   os.Getenv("EMBEDDING_MODEL"),
 	}
 
 	// The SDK appends /rpc automatically
 	cfg.SurrealURL = strings.TrimSuffix(cfg.SurrealURL, "/rpc")
 	cfg.SurrealURL = strings.TrimSuffix(cfg.SurrealURL, "/")
 
+	// LLM defaults: Fireworks GLM-5
 	if cfg.LLMBaseURL == "" {
-		cfg.LLMBaseURL = "https://api.openai.com/v1"
+		cfg.LLMBaseURL = "https://api.fireworks.ai/inference/v1"
+	}
+	if cfg.LLMAPIKey == "" {
+		cfg.LLMAPIKey = os.Getenv("FIREWORKS_API_KEY")
 	}
 	if cfg.LLMModel == "" {
-		cfg.LLMModel = "gpt-4o-mini"
+		cfg.LLMModel = "accounts/fireworks/models/glm-5"
+	}
+
+	// Embedding defaults: Fireworks nomic-embed-text
+	if cfg.EmbeddingBaseURL == "" {
+		cfg.EmbeddingBaseURL = "https://api.fireworks.ai/inference/v1"
+	}
+	if cfg.EmbeddingAPIKey == "" {
+		cfg.EmbeddingAPIKey = os.Getenv("FIREWORKS_API_KEY")
 	}
 	if cfg.EmbeddingModel == "" {
-		cfg.EmbeddingModel = "text-embedding-3-small"
+		cfg.EmbeddingModel = "nomic-ai/nomic-embed-text-v1.5"
 	}
 
 	return cfg

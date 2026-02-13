@@ -17,4 +17,4 @@ DEFINE FIELD fetched_at     ON TABLE repo TYPE datetime;
 DEFINE FIELD enriched_at    ON TABLE repo TYPE option<datetime>;
 
 DEFINE INDEX idx_full_name ON TABLE repo FIELDS full_name UNIQUE;
-DEFINE INDEX idx_hnsw_embedding ON TABLE repo FIELDS embedding HNSW DIMENSION 1536 DIST COSINE;
+DEFINE INDEX idx_hnsw_embedding ON TABLE repo FIELDS embedding HNSW DIMENSION 768 DIST COSINE;

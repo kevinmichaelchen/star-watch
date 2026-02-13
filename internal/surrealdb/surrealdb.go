@@ -64,7 +64,8 @@ DEFINE FIELD IF NOT EXISTS fetched_at     ON TABLE repo TYPE datetime;
 DEFINE FIELD IF NOT EXISTS enriched_at    ON TABLE repo TYPE option<datetime>;
 
 DEFINE INDEX IF NOT EXISTS idx_full_name ON TABLE repo FIELDS full_name UNIQUE;
-DEFINE INDEX IF NOT EXISTS idx_hnsw_embedding ON TABLE repo FIELDS embedding HNSW DIMENSION 1536 DIST COSINE;
+REMOVE INDEX IF EXISTS idx_hnsw_embedding ON TABLE repo;
+DEFINE INDEX idx_hnsw_embedding ON TABLE repo FIELDS embedding HNSW DIMENSION 768 DIST COSINE;
 `
 	_, err := sdk.Query[any](ctx, c.db, schema, nil)
 	if err != nil {
@@ -186,12 +187,17 @@ func (c *Client) UpdateEmbedding(ctx context.Context, fullName string, embedding
 }
 
 func (c *Client) VectorSearch(ctx context.Context, queryVec []float32, k int) ([]models.SearchResult, error) {
+	// NOTE: The HNSW KNN operator (<|K|>) returns empty results despite the
+	// index existing. This appears to be a SurrealDB bug where the HNSW index
+	// is not rebuilt after REMOVE INDEX + DEFINE INDEX. Fall back to brute-force
+	// cosine similarity which works correctly with 277 repos.
 	query := fmt.Sprintf(`
 		SELECT full_name, description, ai_summary, ai_categories, stars, url,
 			vector::similarity::cosine(embedding, $query_vec) AS score
 		FROM repo
-		WHERE embedding <|%d|> $query_vec
+		WHERE embedding IS NOT NONE
 		ORDER BY score DESC
+		LIMIT %d
 	`, k)
 
 	results, err := sdk.Query[[]models.SearchResult](ctx, c.db, query,
