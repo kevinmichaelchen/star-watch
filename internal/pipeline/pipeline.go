@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"sync/atomic"
 
 	"github.com/kevinmichaelchen/star-watch/internal/config"
@@ -16,7 +17,15 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const cacheFile = "stars.json"
+const (
+	cacheFile    = "stars.json"
+	cacheVersion = 2
+)
+
+type repoCache struct {
+	Version int                      `json:"version"`
+	Lists   map[string][]models.Repo `json:"lists"`
+}
 
 type Options struct {
 	SkipEnrich bool
@@ -158,70 +167,154 @@ func Run(ctx context.Context, cfg *config.Config, opts Options) error {
 }
 
 func loadRepos(ctx context.Context, cfg *config.Config, refresh bool) ([]models.Repo, error) {
+	if len(cfg.StarListIDs) == 0 {
+		return nil, fmt.Errorf("STAR_LIST_ID or STAR_LIST_IDS must be set")
+	}
+
 	gh := github.NewClient(cfg.GitHubToken)
-	cached, cacheErr := readCache()
+	cache, cacheErr := readCache(cfg.StarListIDs)
+	if cacheErr != nil {
+		if !os.IsNotExist(cacheErr) {
+			fmt.Printf("  WARN: could not read %s (%v); re-fetching from GitHub\n", cacheFile, cacheErr)
+		}
+		cache = newRepoCache()
+	}
 
-	// --refresh: discard cache and do a full forward fetch
+	// Keep only requested list caches so the file reflects the active config.
+	requested := make(map[string]bool, len(cfg.StarListIDs))
+	for _, listID := range cfg.StarListIDs {
+		requested[listID] = true
+	}
+	cacheChanged := false
+	for listID := range cache.Lists {
+		if requested[listID] {
+			continue
+		}
+		delete(cache.Lists, listID)
+		cacheChanged = true
+	}
+
+	merged := make(map[string]models.Repo)
+
 	if refresh {
-		fmt.Println("Fetching star list from GitHub (full refresh)...")
-		return fetchAndCache(ctx, gh, cfg.StarListID, github.ForwardStrategy{}, nil)
-	}
-
-	// Cache exists: try incremental fetch for new repos
-	if cacheErr == nil && len(cached) > 0 {
-		fmt.Printf("Cache has %d repos. Checking for new stars...\n", len(cached))
-		repos, err := github.IncrementalStrategy{}.Fetch(ctx, gh, cfg.StarListID, cached)
-		if err != nil {
-			fmt.Printf("  WARN: incremental fetch failed (%v), using cache as-is\n", err)
-			return cached, nil
-		}
-		if len(repos) > len(cached) {
-			fmt.Printf("Found %d new repos (%d total)\n", len(repos)-len(cached), len(repos))
-			if err := writeCache(repos); err != nil {
-				fmt.Printf("  WARN: could not update %s: %v\n", cacheFile, err)
+		fmt.Printf("Fetching %d star list(s) from GitHub (full refresh)...\n", len(cfg.StarListIDs))
+		for _, listID := range cfg.StarListIDs {
+			fmt.Printf("List %s:\n", listID)
+			repos, err := github.ForwardStrategy{}.Fetch(ctx, gh, listID, nil)
+			if err != nil {
+				return nil, fmt.Errorf("fetching star list %s: %w", listID, err)
 			}
-		} else {
-			fmt.Printf("Cache is up to date (%d repos)\n", len(cached))
+			fmt.Printf("  Fetched %d repos\n", len(repos))
+			cache.Lists[listID] = repos
+			mergeReposByFullName(merged, repos)
 		}
-		return repos, nil
-	}
-
-	// No cache: full forward fetch
-	fmt.Println("Fetching star list from GitHub...")
-	return fetchAndCache(ctx, gh, cfg.StarListID, github.ForwardStrategy{}, nil)
-}
-
-func fetchAndCache(ctx context.Context, gh *github.Client, listID string, strategy github.Strategy, cached []models.Repo) ([]models.Repo, error) {
-	repos, err := strategy.Fetch(ctx, gh, listID, cached)
-	if err != nil {
-		return nil, fmt.Errorf("fetching star list: %w", err)
-	}
-	fmt.Printf("Fetched %d repos\n", len(repos))
-
-	if err := writeCache(repos); err != nil {
-		fmt.Printf("  WARN: could not cache to %s: %v\n", cacheFile, err)
+		cacheChanged = true
 	} else {
-		fmt.Printf("Cached to %s\n", cacheFile)
+		for _, listID := range cfg.StarListIDs {
+			cachedRepos, hasCache := cache.Lists[listID]
+			var repos []models.Repo
+			var err error
+
+			if hasCache {
+				fmt.Printf("List %s cache has %d repos. Checking for new stars...\n", listID, len(cachedRepos))
+				repos, err = github.IncrementalStrategy{}.Fetch(ctx, gh, listID, cachedRepos)
+				if err != nil {
+					fmt.Printf("  WARN: incremental fetch for %s failed (%v); using cache as-is\n", listID, err)
+					repos = cachedRepos
+				}
+				if len(repos) > len(cachedRepos) {
+					fmt.Printf("  Found %d new repos (%d total)\n", len(repos)-len(cachedRepos), len(repos))
+					cacheChanged = true
+				} else {
+					fmt.Printf("  Cache is up to date (%d repos)\n", len(cachedRepos))
+				}
+			} else {
+				fmt.Printf("No cache for list %s. Fetching from GitHub...\n", listID)
+				repos, err = github.ForwardStrategy{}.Fetch(ctx, gh, listID, nil)
+				if err != nil {
+					return nil, fmt.Errorf("fetching star list %s: %w", listID, err)
+				}
+				fmt.Printf("  Fetched %d repos\n", len(repos))
+				cacheChanged = true
+			}
+
+			cache.Lists[listID] = repos
+			mergeReposByFullName(merged, repos)
+		}
 	}
-	return repos, nil
+
+	combined := flattenRepoMap(merged)
+	fmt.Printf("Combined %d unique repos across %d list(s)\n", len(combined), len(cfg.StarListIDs))
+
+	if cacheChanged {
+		if err := writeCache(cache); err != nil {
+			fmt.Printf("  WARN: could not cache to %s: %v\n", cacheFile, err)
+		} else {
+			fmt.Printf("Cached to %s\n", cacheFile)
+		}
+	}
+
+	return combined, nil
 }
 
-func readCache() ([]models.Repo, error) {
+func readCache(listIDs []string) (*repoCache, error) {
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
 		return nil, err
 	}
-	var repos []models.Repo
-	if err := json.Unmarshal(data, &repos); err != nil {
-		return nil, err
+
+	var cache repoCache
+	if err := json.Unmarshal(data, &cache); err == nil && cache.Version > 0 {
+		if cache.Lists == nil {
+			cache.Lists = make(map[string][]models.Repo)
+		}
+		return &cache, nil
 	}
-	return repos, nil
+
+	// Backward compatibility: old cache format was a plain []Repo.
+	var legacy []models.Repo
+	if err := json.Unmarshal(data, &legacy); err == nil {
+		cache := newRepoCache()
+		if len(listIDs) > 0 {
+			cache.Lists[listIDs[0]] = legacy
+		}
+		return cache, nil
+	}
+
+	return nil, fmt.Errorf("invalid cache format")
 }
 
-func writeCache(repos []models.Repo) error {
-	data, err := json.MarshalIndent(repos, "", "  ")
+func writeCache(cache *repoCache) error {
+	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(cacheFile, data, 0o644)
+}
+
+func newRepoCache() *repoCache {
+	return &repoCache{
+		Version: cacheVersion,
+		Lists:   make(map[string][]models.Repo),
+	}
+}
+
+func mergeReposByFullName(dst map[string]models.Repo, repos []models.Repo) {
+	for _, repo := range repos {
+		dst[repo.FullName] = repo
+	}
+}
+
+func flattenRepoMap(reposByName map[string]models.Repo) []models.Repo {
+	if len(reposByName) == 0 {
+		return nil
+	}
+	out := make([]models.Repo, 0, len(reposByName))
+	for _, repo := range reposByName {
+		out = append(out, repo)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].FullName < out[j].FullName
+	})
+	return out
 }

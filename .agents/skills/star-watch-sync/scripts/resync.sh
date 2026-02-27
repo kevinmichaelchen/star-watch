@@ -9,7 +9,7 @@ if [[ ! -f "go.mod" ]] || ! grep -q "module github.com/kevinmichaelchen/star-wat
   exit 1
 fi
 
-if [[ -z "${STAR_LIST_ID:-}" ]]; then
+if [[ -z "${STAR_LIST_IDS:-}" && -z "${STAR_LIST_ID:-}" ]]; then
   export STAR_LIST_ID="$DEFAULT_STAR_LIST_ID"
 fi
 

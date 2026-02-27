@@ -59,7 +59,7 @@ func syncCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Fetch star list, enrich with AI, store in SurrealDB",
+		Short: "Fetch star list(s), enrich with AI, store in SurrealDB",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := config.Load()
 			return pipeline.Run(context.Background(), cfg, pipeline.Options{

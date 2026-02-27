@@ -10,8 +10,9 @@ Use this skill when the user asks to sync, re-sync, refresh starred repos, or ve
 ## Defaults
 
 - Run commands from the repository root.
-- Prefer this star list unless the user overrides it:
+- Prefer this default star list unless the user overrides it:
   - `STAR_LIST_ID=UL_kwDOAE5HCs4ASM_J`
+- For multi-list sync, set `STAR_LIST_IDS` (comma-separated IDs).
 - Prefer `gh auth token` if `GITHUB_TOKEN` is missing.
 
 ## Workflows
@@ -59,5 +60,5 @@ Interpretation:
 ## Known failure handling
 
 - `401 Bad credentials`: refresh token source (`gh auth token` or `GITHUB_TOKEN`).
-- `Could not resolve to a node with the global id of ''`: missing `STAR_LIST_ID`.
+- `Could not resolve to a node with the global id of ''`: missing `STAR_LIST_ID` or `STAR_LIST_IDS`.
 - `context deadline exceeded` during refresh upsert: run follow-up `sync` from refreshed cache.

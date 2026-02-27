@@ -38,7 +38,8 @@ SURREAL_PASS=<password>
 
 # GitHub
 GITHUB_TOKEN=ghp_...
-STAR_LIST_ID=UL_...          # Node ID of your star list (find via GraphQL Explorer)
+STAR_LIST_ID=UL_...          # Single list mode (backward compatible)
+STAR_LIST_IDS=UL_...,UL_...  # Multi-list mode (comma-separated)
 
 # LLM (any OpenAI-compatible API)
 LLM_BASE_URL=https://api.openai.com/v1
@@ -50,10 +51,10 @@ EMBEDDING_API_KEY=sk-...
 EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-> **Finding your star list ID:** Open the
+> **Finding your star list IDs:** Open the
 > [GitHub GraphQL Explorer](https://docs.github.com/en/graphql/overview/explorer),
 > run `query { viewer { lists(first:10) { nodes { id name } } } }`, and copy
-> the `id` for your list.
+> the `id` values for the lists you want.
 
 ### 3. Initialize the database schema
 
@@ -64,13 +65,13 @@ go run ./cmd/star-watch schema
 ### 4. Fetch and store repos
 
 ```sh
-# First run — fetches from GitHub API and caches to stars.json
+# First run — fetches configured list(s) from GitHub API and caches to stars.json
 go run ./cmd/star-watch sync --skip-enrich
 
-# Subsequent runs read from stars.json (no API calls)
+# Subsequent runs use incremental updates from stars.json
 go run ./cmd/star-watch sync --skip-enrich
 
-# Force re-fetch from GitHub
+# Force re-fetch from GitHub for all configured lists
 go run ./cmd/star-watch sync --skip-enrich --refresh
 ```
 
@@ -137,21 +138,23 @@ internal/
 ### Pipeline flow
 
 1. **Fetch** — Paginated GraphQL query (100/page) pulls repo metadata + README
-   excerpts. Results are cached to `stars.json` to avoid repeat API calls.
-2. **Upsert** — Each repo is merged into SurrealDB via `UPSERT ... MERGE`,
+   excerpts for one or more configured star lists.
+2. **De-duplicate** — Repos from all configured lists are merged by
+   `full_name`, so overlaps across lists are stored once.
+3. **Upsert** — Each repo is merged into SurrealDB via `UPSERT ... MERGE`,
    keyed by `full_name`.
-3. **Enrich** — 5 concurrent workers call an OpenAI-compatible LLM to generate
+4. **Enrich** — 5 concurrent workers call an OpenAI-compatible LLM to generate
    2-3 sentence summaries and 1-3 topic categories per repo.
-4. **Embed** — A single batch call to OpenAI generates 1536-dim vectors from
+5. **Embed** — A single batch call to OpenAI generates 1536-dim vectors from
    `"{full_name}: {ai_summary}"`.
-5. **Store** — Embeddings are written back to SurrealDB, indexed with HNSW for
+6. **Store** — Embeddings are written back to SurrealDB, indexed with HNSW for
    sub-second KNN queries.
 
 ### Caching
 
-GitHub star data is cached to `stars.json` after the first fetch. Subsequent
-`sync` runs read from this file instead of hitting the API. Use `--refresh` to
-force a fresh fetch.
+GitHub star data is cached to `stars.json` after the first fetch. The cache is
+stored per list ID, so each list can be incrementally synced independently.
+Use `--refresh` to force a full re-fetch for all configured lists.
 
 ### Pluggable LLM
 

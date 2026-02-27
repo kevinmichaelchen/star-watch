@@ -16,6 +16,7 @@ type Config struct {
 
 	GitHubToken string
 	StarListID  string
+	StarListIDs []string
 
 	LLMBaseURL string
 	LLMAPIKey  string
@@ -28,6 +29,14 @@ type Config struct {
 
 func Load() *Config {
 	_ = godotenv.Load()
+	starListID := strings.TrimSpace(os.Getenv("STAR_LIST_ID"))
+	starListIDs := parseListIDs(os.Getenv("STAR_LIST_IDS"))
+	if len(starListIDs) == 0 && starListID != "" {
+		starListIDs = []string{starListID}
+	}
+	if starListID == "" && len(starListIDs) > 0 {
+		starListID = starListIDs[0]
+	}
 
 	cfg := &Config{
 		SurrealURL:  os.Getenv("SURREAL_URL"),
@@ -37,7 +46,8 @@ func Load() *Config {
 		SurrealPass: os.Getenv("SURREAL_PASS"),
 
 		GitHubToken: os.Getenv("GITHUB_TOKEN"),
-		StarListID:  os.Getenv("STAR_LIST_ID"),
+		StarListID:  starListID,
+		StarListIDs: starListIDs,
 
 		LLMBaseURL: os.Getenv("LLM_BASE_URL"),
 		LLMAPIKey:  os.Getenv("LLM_API_KEY"),
@@ -75,4 +85,28 @@ func Load() *Config {
 	}
 
 	return cfg
+}
+
+func parseListIDs(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	if len(parts) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
