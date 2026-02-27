@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kevinmichaelchen/star-watch/internal/config"
 	"github.com/kevinmichaelchen/star-watch/internal/embedding"
@@ -381,18 +382,44 @@ func printMarkdownTable(results []map[string]any, fields []string) {
 		headers[i] = displayFieldName(f)
 	}
 
-	fmt.Printf("| %s |\n", strings.Join(headers, " | "))
+	widths := make([]int, len(fields))
+	for i, h := range headers {
+		widths[i] = cellWidth(h)
+	}
+
+	rows := make([][]string, len(results))
+	for i, row := range results {
+		cells := make([]string, len(fields))
+		for j, f := range fields {
+			cells[j] = escapeMarkdown(formatCellValue(f, row[f]))
+			if w := cellWidth(cells[j]); w > widths[j] {
+				widths[j] = w
+			}
+		}
+		rows[i] = cells
+	}
+
+	headerCells := make([]string, len(fields))
+	for i := range headerCells {
+		headerCells[i] = padCell(headers[i], widths[i], false)
+	}
+	fmt.Printf("| %s |\n", strings.Join(headerCells, " | "))
 
 	separators := make([]string, len(fields))
-	for i := range separators {
-		separators[i] = "---"
+	for i, f := range fields {
+		dashes := strings.Repeat("-", max(3, widths[i]))
+		if isRightAlignedField(f) {
+			separators[i] = dashes + ":"
+			continue
+		}
+		separators[i] = dashes
 	}
 	fmt.Printf("| %s |\n", strings.Join(separators, " | "))
 
-	for _, row := range results {
+	for _, row := range rows {
 		cells := make([]string, len(fields))
 		for i, f := range fields {
-			cells[i] = escapeMarkdown(formatCellValue(f, row[f]))
+			cells[i] = padCell(row[i], widths[i], isRightAlignedField(f))
 		}
 		fmt.Printf("| %s |\n", strings.Join(cells, " | "))
 	}
@@ -454,6 +481,31 @@ func formatCellValue(field string, v any) string {
 func escapeMarkdown(s string) string {
 	s = strings.ReplaceAll(s, "|", "\\|")
 	return strings.ReplaceAll(s, "\n", "<br>")
+}
+
+func isRightAlignedField(field string) bool {
+	switch field {
+	case "stars", "score":
+		return true
+	default:
+		return false
+	}
+}
+
+func padCell(s string, width int, right bool) string {
+	padding := width - cellWidth(s)
+	if padding <= 0 {
+		return s
+	}
+	pad := strings.Repeat(" ", padding)
+	if right {
+		return pad + s
+	}
+	return s + pad
+}
+
+func cellWidth(s string) int {
+	return utf8.RuneCountInString(s)
 }
 
 func toInt(v any) int {
