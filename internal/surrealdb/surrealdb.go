@@ -34,6 +34,7 @@ var allowedFields = map[string]bool{
 	"description":    true,
 	"url":            true,
 	"homepage_url":   true,
+	"created_at":     true,
 	"stars":          true,
 	"language":       true,
 	"topics":         true,
@@ -92,6 +93,7 @@ DEFINE FIELD IF NOT EXISTS full_name      ON TABLE repo TYPE string;
 DEFINE FIELD IF NOT EXISTS description    ON TABLE repo TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS url            ON TABLE repo TYPE string;
 DEFINE FIELD IF NOT EXISTS homepage_url   ON TABLE repo TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at     ON TABLE repo TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS stars          ON TABLE repo TYPE int;
 DEFINE FIELD IF NOT EXISTS language       ON TABLE repo TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS topics         ON TABLE repo TYPE array<string>;
@@ -130,6 +132,9 @@ func (c *Client) UpsertRepo(ctx context.Context, r models.Repo) error {
 	}
 	if r.HomepageURL != nil {
 		data["homepage_url"] = *r.HomepageURL
+	}
+	if r.CreatedAt != nil {
+		data["created_at"] = *r.CreatedAt
 	}
 	if r.Language != nil {
 		data["language"] = *r.Language

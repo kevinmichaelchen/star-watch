@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kevinmichaelchen/star-watch/internal/config"
 	"github.com/kevinmichaelchen/star-watch/internal/embedding"
@@ -72,14 +74,16 @@ func syncCmd() *cobra.Command {
 	return cmd
 }
 
-const defaultFields = "full_name,description,ai_summary,ai_categories,stars,url,score"
+const defaultFields = "full_name,description,ai_summary,ai_categories,stars,created_at,url,score"
 
 func searchCmd() *cobra.Command {
 	var (
-		k         int
-		jsonOut   bool
-		fieldsRaw string
-		sortRaw   string
+		k           int
+		pool        int
+		jsonOut     bool
+		markdownOut bool
+		fieldsRaw   string
+		sortRaw     string
 	)
 
 	cmd := &cobra.Command{
@@ -90,6 +94,15 @@ func searchCmd() *cobra.Command {
 			ctx := context.Background()
 			cfg := config.Load()
 			query := args[0]
+			if jsonOut && markdownOut {
+				return fmt.Errorf("--json and --markdown are mutually exclusive")
+			}
+			if k <= 0 {
+				return fmt.Errorf("--k must be > 0")
+			}
+			if pool < 0 {
+				return fmt.Errorf("--pool must be >= 0")
+			}
 
 			fields, err := parseFields(fieldsRaw)
 			if err != nil {
@@ -114,18 +127,41 @@ func searchCmd() *cobra.Command {
 			}
 			defer func() { _ = db.Close(ctx) }()
 
+			searchK := k
+			searchSort := sortSpecs
+			searchFields := mergeFields(fields, sortSpecs)
+
+			// Optional two-stage retrieval:
+			// 1) fetch top semantic candidates by score
+			// 2) apply user sort (e.g. stars desc) in-memory
+			if pool > 0 {
+				searchK = pool
+				if searchK < k {
+					searchK = k
+				}
+				searchSort = []surrealdb.SortSpec{{Field: "score", Desc: true}}
+			}
+
 			results, err := db.VectorSearch(ctx, vec, surrealdb.SearchOptions{
-				K:      k,
-				Fields: fields,
-				Sort:   sortSpecs,
+				K:      searchK,
+				Fields: searchFields,
+				Sort:   searchSort,
 			})
 			if err != nil {
 				return err
+			}
+			if pool > 0 {
+				sortResultMaps(results, sortSpecs)
+				if len(results) > k {
+					results = results[:k]
+				}
 			}
 
 			if len(results) == 0 {
 				if jsonOut {
 					fmt.Println("[]")
+				} else if markdownOut {
+					printMarkdownTable(nil, fields)
 				} else {
 					fmt.Println("No results found")
 				}
@@ -139,6 +175,10 @@ func searchCmd() *cobra.Command {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(filtered)
+			}
+			if markdownOut {
+				printMarkdownTable(filtered, fields)
+				return nil
 			}
 
 			// Human-readable output
@@ -165,7 +205,9 @@ func searchCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVarP(&k, "k", "k", 10, "Number of results")
+	cmd.Flags().IntVar(&pool, "pool", 0, "Semantic candidate pool size before applying --sort (0 disables re-ranking)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON array")
+	cmd.Flags().BoolVar(&markdownOut, "markdown", false, "Output as Markdown table")
 	cmd.Flags().StringVar(&fieldsRaw, "fields", defaultFields, "Comma-separated field names")
 	cmd.Flags().StringVar(&sortRaw, "sort", "score desc", "Comma-separated field [asc|desc] specs")
 	return cmd
@@ -219,6 +261,101 @@ func parseSort(raw string) ([]surrealdb.SortSpec, error) {
 	return specs, nil
 }
 
+func mergeFields(fields []string, sortSpecs []surrealdb.SortSpec) []string {
+	wanted := make(map[string]bool, len(fields)+len(sortSpecs)+1)
+	out := make([]string, 0, len(fields)+len(sortSpecs)+1)
+	for _, f := range fields {
+		if wanted[f] {
+			continue
+		}
+		wanted[f] = true
+		out = append(out, f)
+	}
+	for _, s := range sortSpecs {
+		if wanted[s.Field] {
+			continue
+		}
+		wanted[s.Field] = true
+		out = append(out, s.Field)
+	}
+	if !wanted["score"] {
+		out = append(out, "score")
+	}
+	return out
+}
+
+func sortResultMaps(results []map[string]any, sortSpecs []surrealdb.SortSpec) {
+	if len(results) < 2 || len(sortSpecs) == 0 {
+		return
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		left := results[i]
+		right := results[j]
+		for _, s := range sortSpecs {
+			cmp := compareValues(left[s.Field], right[s.Field], s.Field)
+			if cmp == 0 {
+				continue
+			}
+			if s.Desc {
+				return cmp > 0
+			}
+			return cmp < 0
+		}
+		li, _ := left["full_name"].(string)
+		ri, _ := right["full_name"].(string)
+		return li < ri
+	})
+}
+
+func compareValues(a, b any, field string) int {
+	if a == nil && b == nil {
+		return 0
+	}
+	if a == nil {
+		return -1
+	}
+	if b == nil {
+		return 1
+	}
+
+	if ta, ok := asTime(a); ok {
+		if tb, ok := asTime(b); ok {
+			switch {
+			case ta.Before(tb):
+				return -1
+			case ta.After(tb):
+				return 1
+			default:
+				return 0
+			}
+		}
+	}
+
+	if fa, ok := asFloat(a); ok {
+		if fb, ok := asFloat(b); ok {
+			switch {
+			case fa < fb:
+				return -1
+			case fa > fb:
+				return 1
+			default:
+				return 0
+			}
+		}
+	}
+
+	sa := strings.ToLower(formatCellValue(field, a))
+	sb := strings.ToLower(formatCellValue(field, b))
+	switch {
+	case sa < sb:
+		return -1
+	case sa > sb:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // filterFields keeps only the requested keys in each result map.
 func filterFields(results []map[string]any, fields []string) []map[string]any {
 	wanted := make(map[string]bool, len(fields))
@@ -238,6 +375,87 @@ func filterFields(results []map[string]any, fields []string) []map[string]any {
 	return out
 }
 
+func printMarkdownTable(results []map[string]any, fields []string) {
+	headers := make([]string, len(fields))
+	for i, f := range fields {
+		headers[i] = displayFieldName(f)
+	}
+
+	fmt.Printf("| %s |\n", strings.Join(headers, " | "))
+
+	separators := make([]string, len(fields))
+	for i := range separators {
+		separators[i] = "---"
+	}
+	fmt.Printf("| %s |\n", strings.Join(separators, " | "))
+
+	for _, row := range results {
+		cells := make([]string, len(fields))
+		for i, f := range fields {
+			cells[i] = escapeMarkdown(formatCellValue(f, row[f]))
+		}
+		fmt.Printf("| %s |\n", strings.Join(cells, " | "))
+	}
+}
+
+func displayFieldName(field string) string {
+	switch field {
+	case "full_name":
+		return "Repo"
+	case "stars":
+		return "Stars"
+	case "created_at":
+		return "Created"
+	case "url":
+		return "URL"
+	case "ai_categories":
+		return "Categories"
+	case "ai_summary":
+		return "Summary"
+	case "score":
+		return "Score"
+	default:
+		return strings.ReplaceAll(field, "_", " ")
+	}
+}
+
+func formatCellValue(field string, v any) string {
+	if v == nil {
+		return ""
+	}
+	if field == "url" {
+		if s, ok := v.(string); ok && s != "" {
+			return fmt.Sprintf("[%s](%s)", s, s)
+		}
+	}
+	if t, ok := asTime(v); ok {
+		if strings.HasSuffix(field, "_at") {
+			return t.UTC().Format("2006-01-02")
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	if n, ok := asFloat(v); ok {
+		if field == "score" {
+			return fmt.Sprintf("%.3f", n)
+		}
+		return strconv.Itoa(int(n))
+	}
+	if s := toStringSlice(v); len(s) > 0 {
+		return strings.Join(s, ", ")
+	}
+	switch vv := v.(type) {
+	case string:
+		return vv
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func escapeMarkdown(s string) string {
+	s = strings.ReplaceAll(s, "|", "\\|")
+	return strings.ReplaceAll(s, "\n", "<br>")
+}
+
 func toInt(v any) int {
 	switch n := v.(type) {
 	case float64:
@@ -250,6 +468,44 @@ func toInt(v any) int {
 		return int(n)
 	default:
 		return 0
+	}
+}
+
+func asFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	default:
+		return 0, false
+	}
+}
+
+func asTime(v any) (time.Time, bool) {
+	switch t := v.(type) {
+	case time.Time:
+		return t, true
+	case string:
+		if parsed, err := time.Parse(time.RFC3339, t); err == nil {
+			return parsed, true
+		}
+		if parsed, err := time.Parse("2006-01-02", t); err == nil {
+			return parsed, true
+		}
+		return time.Time{}, false
+	default:
+		return time.Time{}, false
 	}
 }
 

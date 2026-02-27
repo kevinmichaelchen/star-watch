@@ -90,6 +90,16 @@ go run ./cmd/star-watch sync --force
 # Semantic similarity search
 go run ./cmd/star-watch search "RAG framework"
 go run ./cmd/star-watch search -k 5 "vector database for embeddings"
+go run ./cmd/star-watch search --markdown \
+  --fields "full_name,stars,created_at,url,score" \
+  --sort "score desc,stars desc" \
+  "agentic memory"
+
+# Re-rank by stars inside a semantic candidate pool
+go run ./cmd/star-watch search --json -k 10 --pool 100 \
+  --fields "full_name,stars,created_at,url,score" \
+  --sort "stars desc" \
+  "agentic memory"
 
 # Stats and category breakdown
 go run ./cmd/star-watch stats
@@ -106,6 +116,8 @@ go run ./cmd/star-watch stats
 | `star-watch sync --refresh` | Re-fetch from GitHub (bypass `stars.json` cache) |
 | `star-watch search "query"` | Vector similarity search (default top 10) |
 | `star-watch search -k 5 "query"` | Vector similarity search (top k) |
+| `star-watch search --markdown ...` | Markdown table output for reports |
+| `star-watch search --pool 100 --sort "stars desc" ...` | Semantic retrieval + in-memory rerank |
 | `star-watch stats` | Show counts and category breakdown |
 
 ## Architecture

@@ -6,6 +6,7 @@ DEFINE FIELD full_name      ON TABLE repo TYPE string;
 DEFINE FIELD description    ON TABLE repo TYPE option<string>;
 DEFINE FIELD url            ON TABLE repo TYPE string;
 DEFINE FIELD homepage_url   ON TABLE repo TYPE option<string>;
+DEFINE FIELD created_at     ON TABLE repo TYPE option<datetime>;
 DEFINE FIELD stars          ON TABLE repo TYPE int;
 DEFINE FIELD language       ON TABLE repo TYPE option<string>;
 DEFINE FIELD topics         ON TABLE repo TYPE array<string>;

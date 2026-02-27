@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/kevinmichaelchen/star-watch/internal/models"
 )
@@ -37,13 +38,14 @@ query($listId: ID!, $first: Int, $after: String, $last: Int, $before: String) {
           hasPreviousPage
           startCursor
         }
-        nodes {
+		nodes {
           ... on Repository {
             owner { login }
             name
             description
             url
             homepageUrl
+            createdAt
             stargazerCount
             primaryLanguage { name }
             repositoryTopics(first: 20) {
@@ -128,11 +130,12 @@ type repoNode struct {
 	Owner struct {
 		Login string `json:"login"`
 	} `json:"owner"`
-	Name            string  `json:"name"`
-	Description     *string `json:"description"`
-	URL             string  `json:"url"`
-	HomepageURL     *string `json:"homepageUrl"`
-	StargazerCount  int     `json:"stargazerCount"`
+	Name            string     `json:"name"`
+	Description     *string    `json:"description"`
+	URL             string     `json:"url"`
+	HomepageURL     *string    `json:"homepageUrl"`
+	CreatedAt       *time.Time `json:"createdAt"`
+	StargazerCount  int        `json:"stargazerCount"`
 	PrimaryLanguage *struct {
 		Name string `json:"name"`
 	} `json:"primaryLanguage"`
@@ -218,6 +221,7 @@ func nodeToRepo(n repoNode) models.Repo {
 		Description: n.Description,
 		URL:         n.URL,
 		HomepageURL: n.HomepageURL,
+		CreatedAt:   n.CreatedAt,
 		Stars:       n.StargazerCount,
 	}
 
